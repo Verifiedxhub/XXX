@@ -1,0 +1,2243 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local StarterGui = game:GetService("StarterGui")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local TweenService = game:GetService("TweenService")
+local HttpService = game:GetService("HttpService")
+local Lighting = game:GetService("Lighting")
+local UserInputService = game:GetService("UserInputService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+-- ======================== ADMIN REMOTE ========================
+local adminRemote = nil
+local adminUUID = "f888ee6e-c86d-46e1-93d7-0639d6635d42"
+local adminIsFunction = false
+
+local function setRemote(remote, method)
+    adminRemote = remote
+    adminIsFunction = (remote:IsA("RemoteFunction") or method == "InvokeServer")
+end
+
+task.spawn(function()
+    local Packages = ReplicatedStorage:FindFirstChild("Packages")
+    if Packages then
+        local Net = Packages:FindFirstChild("Net")
+        if Net then
+            local children = Net:GetChildren()
+            for i, obj in ipairs(children) do
+                if obj.Name == "RE/AdminPanelService/OpenUI" then
+                    for offset = 3, 1, -1 do
+                        local candidate = children[i + offset]
+                        if candidate and candidate:IsA("RemoteFunction") and candidate.Name:sub(1, 3) == "RF/" then
+                            setRemote(candidate, "InvokeServer")
+                            return
+                        end
+                    end
+                    break
+                end
+            end
+        end
+    end
+
+    local oldNC
+    oldNC = hookmetamethod(game, "__namecall", function(self, ...)
+        local method = getnamecallmethod()
+        if method == "InvokeServer" or method == "FireServer" then
+            local a = {...}
+            if a[1] and type(a[1]) == "string" and #a[1] == 36 and a[1]:sub(1, 4) == "f888" then
+                if not adminRemote then
+                    setRemote(self, method)
+                end
+            end
+        end
+        return oldNC(self, ...)
+    end)
+end)
+
+local function sendAdminCmd(player, cmd)
+    if not adminRemote or not adminUUID or not player then return end
+    pcall(function()
+        if adminIsFunction then
+            adminRemote:InvokeServer(adminUUID, player, cmd)
+        else
+            adminRemote:FireServer(adminUUID, player, cmd)
+        end
+    end)
+end
+
+-- ======================== CONFIG ========================
+local CONFIG_FOLDER = "HaloHub"
+local CONFIG_FILE = CONFIG_FOLDER .. "/config.json"
+local function ensureFolder()
+    if not isfolder(CONFIG_FOLDER) then
+        makefolder(CONFIG_FOLDER)
+    end
+end
+local function saveConfig(cfg)
+    ensureFolder()
+    pcall(function()
+        writefile(CONFIG_FILE, HttpService:JSONEncode(cfg))
+    end)
+end
+local function loadConfig()
+    ensureFolder()
+    if isfile(CONFIG_FILE) then
+        local ok, r = pcall(function()
+            return HttpService:JSONDecode(readfile(CONFIG_FILE))
+        end)
+        if ok and type(r) == "table" then
+            return r
+        end
+    end
+    return {}
+end
+local savedCfg = loadConfig()
+
+-- ======================== FPS BOOST ========================
+local FPS_ON = savedCfg.fps or false
+local origGlobalShadows = Lighting.GlobalShadows
+local origFogEnd = Lighting.FogEnd
+local origFogStart = Lighting.FogStart
+local origFogColor = Lighting.FogColor
+local origAmbient = Lighting.Ambient
+local origOutdoorAmbient = Lighting.OutdoorAmbient
+local origBrightness = Lighting.Brightness
+local origClockTime = Lighting.ClockTime
+local origShadowSoftness = Lighting.ShadowSoftness
+local origEnvDiffScale = Lighting.EnvironmentDiffuseScale
+local origEnvSpecScale = Lighting.EnvironmentSpecularScale
+local fpsDescConn = nil
+local fpsShadowConn = nil
+local fpsRemovedConns = {}
+local origWaterWaveSize = workspace.Terrain.WaterWaveSize
+local origWaterWaveSpeed = workspace.Terrain.WaterWaveSpeed
+local origWaterReflectance = workspace.Terrain.WaterReflectance
+local origWaterTransparency = workspace.Terrain.WaterTransparency
+local origBrightness2 = Lighting.Brightness
+local origClockTime2 = Lighting.ClockTime
+local origAmbient2 = Lighting.Ambient
+local origOutdoorAmbient2 = Lighting.OutdoorAmbient
+
+local function fpsApplyToInstance(v)
+    if v:IsA("MeshPart") then
+        pcall(function()
+            v.RenderFidelity = Enum.RenderFidelity.Automatic
+        end)
+    end
+    if v:IsA("BasePart") then
+        pcall(function()
+            v.Material = Enum.Material.Plastic
+        end)
+        pcall(function()
+            v.Reflectance = 0
+        end)
+        pcall(function()
+            v.CastShadow = false
+        end)
+    elseif v:IsA("Decal") then
+        v.Transparency = 1
+    elseif v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Smoke") or v:IsA("Fire") or v:IsA("Sparkles") then
+        pcall(function()
+            v.Lifetime = NumberRange.new(0)
+        end)
+        pcall(function()
+            v.Enabled = false
+        end)
+    end
+end
+
+local function fpsApplyAll()
+    local descendants = game:GetDescendants()
+    for i, v in ipairs(descendants) do
+        fpsApplyToInstance(v)
+        if i % 100 == 0 then
+            task.wait()
+        end
+    end
+end
+
+local function applyFPS()
+    workspace.Terrain.WaterWaveSize = 0
+    workspace.Terrain.WaterWaveSpeed = 0
+    workspace.Terrain.WaterReflectance = 0
+    workspace.Terrain.WaterTransparency = 0
+    Lighting.GlobalShadows = false
+    Lighting.FogEnd = 9e9
+    Lighting.FogStart = 9e9
+    Lighting.Brightness = 5
+    Lighting.Ambient = Color3.fromRGB(255, 255, 255)
+    Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
+    Lighting.ShadowSoftness = 0
+    Lighting.EnvironmentDiffuseScale = 0
+    Lighting.EnvironmentSpecularScale = 0
+    pcall(function()
+        settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+    end)
+    for _, v in ipairs(Lighting:GetChildren()) do
+        if v:IsA("PostEffect") or v:IsA("Sky") or v:IsA("Atmosphere") then
+            if v:IsA("PostEffect") then
+                local orig = v.Enabled
+                table.insert(fpsRemovedConns, {obj = v, prop = "Enabled", orig = orig})
+                v.Enabled = false
+            else
+                v.Parent = nil
+                table.insert(fpsRemovedConns, {obj = v, orphan = true})
+            end
+        end
+    end
+    fpsDescConn = workspace.DescendantAdded:Connect(fpsApplyToInstance)
+    task.spawn(fpsApplyAll)
+    fpsShadowConn = RunService.Heartbeat:Connect(function()
+        if Lighting.GlobalShadows then
+            Lighting.GlobalShadows = false
+        end
+        if Lighting.ShadowSoftness ~= 0 then
+            Lighting.ShadowSoftness = 0
+        end
+        if Lighting.EnvironmentDiffuseScale ~= 0 then
+            Lighting.EnvironmentDiffuseScale = 0
+        end
+        if Lighting.EnvironmentSpecularScale ~= 0 then
+            Lighting.EnvironmentSpecularScale = 0
+        end
+    end)
+end
+
+local function removeFPS()
+    Lighting.GlobalShadows = origGlobalShadows
+    Lighting.FogEnd = origFogEnd
+    Lighting.FogStart = origFogStart
+    Lighting.ShadowSoftness = origShadowSoftness
+    Lighting.EnvironmentDiffuseScale = origEnvDiffScale
+    Lighting.EnvironmentSpecularScale = origEnvSpecScale
+    Lighting.Brightness = origBrightness2
+    Lighting.ClockTime = origClockTime2
+    Lighting.Ambient = origAmbient2
+    Lighting.OutdoorAmbient = origOutdoorAmbient2
+    workspace.Terrain.WaterWaveSize = origWaterWaveSize
+    workspace.Terrain.WaterWaveSpeed = origWaterWaveSpeed
+    workspace.Terrain.WaterReflectance = origWaterReflectance
+    workspace.Terrain.WaterTransparency = origWaterTransparency
+    pcall(function()
+        settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic
+    end)
+    for _, ref in ipairs(fpsRemovedConns) do
+        if ref.orphan then
+            pcall(function()
+                ref.obj.Parent = Lighting
+            end)
+        else
+            pcall(function()
+                ref.obj[ref.prop] = ref.orig
+            end)
+        end
+    end
+    fpsRemovedConns = {}
+    for _, v in ipairs(workspace:GetDescendants()) do
+        if v:IsA("BasePart") then
+            v.CastShadow = true
+            if v:IsA("MeshPart") then
+                pcall(function()
+                    v.RenderFidelity = Enum.RenderFidelity.Automatic
+                end)
+            end
+        elseif v:IsA("ParticleEmitter") or v:IsA("Smoke") or v:IsA("Fire") or v:IsA("Sparkles") then
+            v.Enabled = true
+        end
+    end
+    if fpsDescConn then
+        fpsDescConn:Disconnect()
+        fpsDescConn = nil
+    end
+    if fpsShadowConn then
+        fpsShadowConn:Disconnect()
+        fpsShadowConn = nil
+    end
+end
+if FPS_ON then
+    applyFPS()
+end
+
+-- ======================== STATE ========================
+local SELECTED_SLOT = savedCfg.slot or 10
+local AUTO_BLOCK = savedCfg.autoBlock or false
+local AUTO_BALLOON = savedCfg.autoBalloon or false
+local BALLOON_CMD = savedCfg.balloonCmd or "balloon"
+local AUTO_MINIMIZE = savedCfg.autoMinimize or false
+local FLOAT_LOCKED = savedCfg.floatLocked or false
+local TP_DELAY = 0.18
+local STEAL_DELAY = 0.18
+local isTab2TPRunning = false
+local isBlocking = false
+
+-- ======================== TRACKING STATE ========================
+local TRACKED_BRAINROT = nil
+local TRACKED_SLOT = nil
+local TRACKED_INSTANCE = nil
+
+local REQUIRED_TOOL = "Flying Carpet"
+local FLASH_TOOL = "Flash Teleport"
+
+local TAB2_TP_POSITION = Vector3.new(-335.791779, -7.308126, 63.851040)
+local TAB2_CAM_CFRAME = CFrame.new(-337.0014, -3.4227, 76.0416, 0.9951, 0.0196, -0.0968, 0.0000, 0.9800, 0.1988, 0.0987, -0.1979, 0.9752)
+local TAB2_CAM_FOV = 70
+
+-- iPhone only camera positions
+local IPHONE_CAMS = {
+    ["1"] = {px = -359.2391, py = 0.6996, pz = -10.9553, lx = 0.8486, ly = -0.5280, lz = -0.0346, fov = 70},
+    ["2"] = {px = -359.8163, py = -0.3208, pz = -11.1923, lx = 0.8947, ly = -0.4463, lz = -0.0156, fov = 70},
+    ["3"] = {px = -360.0143, py = -0.7540, pz = -10.9237, lx = 0.9106, ly = -0.4117, lz = -0.0371, fov = 70},
+    ["4"] = {px = -358.6536, py = -3.7064, pz = -12.5312, lx = 0.9845, ly = -0.1755, lz = -0.0057, fov = 70},
+    ["5"] = {px = -358.6536, py = -3.7064, pz = -12.5312, lx = 0.9845, ly = -0.1755, lz = -0.0057, fov = 70},
+    ["6"] = {px = -352.3907, py = -3.9230, pz = 46.9570, lx = 0.8745, ly = -0.1582, lz = -0.4585, fov = 70},
+    ["7"] = {px = -352.4274, py = -4.2021, pz = 46.9763, lx = 0.8775, ly = -0.1358, lz = -0.4600, fov = 70},
+    ["8"] = {px = -341.0641, py = -5.1177, pz = 75.1577, lx = 0.4218, ly = -0.0626, lz = -0.9045, fov = 70},
+    ["9"] = {px = -340.7250, py = -1.4740, pz = 81.8429, lx = 0.2573, ly = -0.2308, lz = -0.9384, fov = 70},
+    ["10"] = {px = -337.8525, py = -1.5823, pz = 82.4183, lx = 0.1075, ly = -0.2252, lz = -0.9684, fov = 70}
+}
+
+local SLOT_DEFAULT_CAM = {
+    [1] = CFrame.lookAt(Vector3.new(-359.2391, 0.6996, -10.9553), Vector3.new(-359.2391, 0.6996, -10.9553) + Vector3.new(0.8486, -0.5280, -0.0346)),
+    [2] = CFrame.lookAt(Vector3.new(-359.8163, -0.3208, -11.1923), Vector3.new(-359.8163, -0.3208, -11.1923) + Vector3.new(0.8947, -0.4463, -0.0156)),
+    [3] = CFrame.lookAt(Vector3.new(-360.0143, -0.7540, -10.9237), Vector3.new(-360.0143, -0.7540, -10.9237) + Vector3.new(0.9106, -0.4117, -0.0371)),
+    [4] = CFrame.lookAt(Vector3.new(-358.6536, -3.7064, -12.5312), Vector3.new(-358.6536, -3.7064, -12.5312) + Vector3.new(0.9845, -0.1755, -0.0057)),
+    [5] = CFrame.lookAt(Vector3.new(-358.6536, -3.7064, -12.5312), Vector3.new(-358.6536, -3.7064, -12.5312) + Vector3.new(0.9845, -0.1755, -0.0057)),
+    [6] = CFrame.lookAt(Vector3.new(-352.3907, -3.9230, 46.9570), Vector3.new(-352.3907, -3.9230, 46.9570) + Vector3.new(0.8745, -0.1582, -0.4585)),
+    [7] = CFrame.lookAt(Vector3.new(-352.4274, -4.2021, 46.9763), Vector3.new(-352.4274, -4.2021, 46.9763) + Vector3.new(0.8775, -0.1358, -0.4600)),
+    [8] = CFrame.lookAt(Vector3.new(-341.0641, -5.1177, 75.1577), Vector3.new(-341.0641, -5.1177, 75.1577) + Vector3.new(0.4218, -0.0626, -0.9045)),
+    [9] = CFrame.lookAt(Vector3.new(-340.7250, -1.4740, 81.8429), Vector3.new(-340.7250, -1.4740, 81.8429) + Vector3.new(0.2573, -0.2308, -0.9384)),
+    [10] = CFrame.lookAt(Vector3.new(-337.8525, -1.5823, 82.4183), Vector3.new(-337.8525, -1.5823, 82.4183) + Vector3.new(0.1075, -0.2252, -0.9684))
+}
+
+local SLOTS_1_4_TP = Vector3.new(-348.632111, -7.300003, -11.387415)
+local SPOT_B_1_4 = CFrame.new(-348.632111, -7.300003, -11.387415)
+local SPOT_B_8_10 = CFrame.new(-335.791779, -7.308126, 63.851040)
+local SLOT_5_TP = Vector3.new(-346.347809, -7.300003, -12.602734)
+local SPOT_B_5 = CFrame.new(-346.347809, -7.300003, -12.602734)
+local SLOT_7_TP = Vector3.new(-341.459229, -7.300003, 41.226028)
+local SPOT_B_7 = CFrame.new(-341.459229, -7.300003, 41.226028)
+
+local function getCamForSlot(slot)
+    local key = tostring(slot)
+    local t = IPHONE_CAMS[key]
+    if t then
+        local pos = Vector3.new(t.px, t.py, t.pz)
+        local look = Vector3.new(t.lx, t.ly, t.lz)
+        return CFrame.lookAt(pos, pos + look), t.fov or 70
+    end
+    return SLOT_DEFAULT_CAM[slot] or TAB2_CAM_CFRAME, TAB2_CAM_FOV
+end
+
+local function getTPForSlot(slot)
+    if slot >= 1 and slot <= 4 then
+        return SLOTS_1_4_TP
+    elseif slot == 5 then
+        return SLOT_5_TP
+    elseif slot == 6 or slot == 7 then
+        return SLOT_7_TP
+    end
+    return TAB2_TP_POSITION
+end
+
+local PromptMemoryCache = {}
+local InternalStealCache = {}
+local originalDurations = {}
+
+-- ======================== CAMERA ========================
+local Camera = workspace.CurrentCamera
+local camLocked = false
+local CAM_CF = TAB2_CAM_CFRAME
+local lockedFOV = 70
+local BASE_ASPECT = 16 / 9
+
+local function getAdjustedFOV(baseFOV)
+    local vp = Camera.ViewportSize
+    local aspect = vp.X / math.max(vp.Y, 1)
+    local ratio = BASE_ASPECT / aspect
+    local halfAngle = math.rad(baseFOV / 2)
+    local adjustedHalf = math.atan(math.tan(halfAngle) * ratio)
+    return math.clamp(math.deg(adjustedHalf) * 2, 30, 120)
+end
+
+RunService:BindToRenderStep("HaloHubCamLock", Enum.RenderPriority.Camera.Value + 1, function()
+    if not camLocked then
+        return
+    end
+    if Camera.CameraType ~= Enum.CameraType.Scriptable then
+        Camera.CameraType = Enum.CameraType.Scriptable
+        Camera.CameraSubject = nil
+    end
+    Camera.CFrame = CAM_CF
+    Camera.FieldOfView = getAdjustedFOV(lockedFOV)
+end)
+
+local function lockCamera(cf, fov)
+    CAM_CF = cf or TAB2_CAM_CFRAME
+    lockedFOV = fov or 70
+    camLocked = true
+    Camera.CameraType = Enum.CameraType.Scriptable
+    Camera.CameraSubject = nil
+    Camera.CFrame = CAM_CF
+    Camera.FieldOfView = getAdjustedFOV(lockedFOV)
+end
+
+local function unlockCamera()
+    camLocked = false
+    Camera.CameraType = Enum.CameraType.Custom
+    task.delay(0.1, function()
+        local c = LocalPlayer.Character
+        local h = c and c:FindFirstChildOfClass("Humanoid")
+        if h then
+            Camera.CameraSubject = h
+        end
+        Camera.FieldOfView = 70
+    end)
+end
+
+-- ======================== HELPERS ========================
+local function getHRP()
+    local c = LocalPlayer.Character
+    if not c then
+        return nil
+    end
+    return c:FindFirstChild("HumanoidRootPart")
+end
+
+local function findNearestEnemy()
+    local root = getHRP()
+    if not root then
+        return nil
+    end
+    local nearest, minDist = nil, math.huge
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            local r = p.Character:FindFirstChild("HumanoidRootPart")
+            if r then
+                local d = (root.Position - r.Position).Magnitude
+                if d < minDist then
+                    minDist = d
+                    nearest = p
+                end
+            end
+        end
+    end
+    return nearest
+end
+
+-- ======================== NAVIGATION BLOCK ========================
+local function click(x, y)
+    VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 1)
+    VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 1)
+end
+
+local function NavigationBlock(targetPlayer)
+    if not targetPlayer then
+        return
+    end
+    if isBlocking then
+        return
+    end
+    isBlocking = true
+    task.spawn(function()
+        local cam = workspace.CurrentCamera.ViewportSize
+        local x = cam.X / 2
+        local y = cam.Y / 2 + 29
+        StarterGui:SetCore("PromptBlockPlayer", targetPlayer)
+        RunService.Stepped:Wait()
+        click(x, y)
+        click(x, y)
+        click(x, y)
+        click(x, y)
+        click(x, y)
+        RunService.Stepped:Wait()
+        click(x, y)
+        click(x, y)
+        click(x, y)
+        click(x, y)
+        click(x, y)
+        RunService.Stepped:Wait()
+        click(x, y)
+        click(x, y)
+        click(x, y)
+        click(x, y)
+        click(x, y)
+        task.wait(0.2)
+        isBlocking = false
+    end)
+end
+
+-- ======================== STEAL INTERNALS ========================
+local function buildStealCallbacks(prompt)
+    if InternalStealCache[prompt] then
+        return
+    end
+    local data = {holdCallbacks = {}, triggerCallbacks = {}, ready = true}
+    local ok1, c1 = pcall(getconnections, prompt.PromptButtonHoldBegan)
+    if ok1 and type(c1) == "table" then
+        for _, c in ipairs(c1) do
+            if type(c.Function) == "function" then
+                table.insert(data.holdCallbacks, c.Function)
+            end
+        end
+    end
+    local ok2, c2 = pcall(getconnections, prompt.Triggered)
+    if ok2 and type(c2) == "table" then
+        for _, c in ipairs(c2) do
+            if type(c.Function) == "function" then
+                table.insert(data.triggerCallbacks, c.Function)
+            end
+        end
+    end
+    if #data.holdCallbacks > 0 or #data.triggerCallbacks > 0 then
+        InternalStealCache[prompt] = data
+    end
+end
+
+local function ensureStealCallbacks(prompt)
+    if InternalStealCache[prompt] then
+        return true
+    end
+    local t0 = tick()
+    repeat
+        buildStealCallbacks(prompt)
+        if InternalStealCache[prompt] then
+            return true
+        end
+        task.wait(0.05)
+    until tick() - t0 > 1
+    return InternalStealCache[prompt] ~= nil
+end
+
+local function executeSteal(prompt)
+    local data = InternalStealCache[prompt]
+    if not data or not data.ready then
+        return false
+    end
+    data.ready = false
+    task.spawn(function()
+        for _, fn in ipairs(data.holdCallbacks) do
+            task.spawn(fn)
+        end
+        for _, fn in ipairs(data.triggerCallbacks) do
+            task.spawn(fn)
+        end
+        task.wait(0.05)
+        data.ready = true
+    end)
+    return true
+end
+
+local function getPromptFromPodium(podium)
+    local function search(inst)
+        for _, child in ipairs(inst:GetChildren()) do
+            if child:IsA("ProximityPrompt") then
+                return child
+            end
+            local found = search(child)
+            if found then
+                return found
+            end
+        end
+        return nil
+    end
+    return search(podium)
+end
+
+-- ======================== HELPERS: findBasePart ========================
+local function findBasePart(inst)
+    if inst:IsA("BasePart") then
+        return inst
+    end
+    for _, child in ipairs(inst:GetChildren()) do
+        local found = findBasePart(child)
+        if found then
+            return found
+        end
+    end
+    return nil
+end
+
+local PODIUM_STRUCTURAL = {Base = true, Claim = true, PodiumModel = true, AnimalPodiums = true, PlotSign = true}
+
+-- ======================== PLOT DETECTION ========================
+local TARGET_POSITION = Vector3.new(-347.666534, -7.490204, 26.719028)
+
+local function isMyBase(plot)
+    local sign = plot:FindFirstChild("PlotSign")
+    if sign then
+        local yb = sign:FindFirstChild("YourBase")
+        if yb and yb:IsA("BillboardGui") and yb.Enabled then
+            return true
+        end
+    end
+    if plot:GetAttribute("Owner") == LocalPlayer.UserId then
+        return true
+    end
+    return false
+end
+
+local function getNearestEnemyPlot()
+    local closestPlot, closestDist = nil, math.huge
+    for _, plot in ipairs(workspace.Plots:GetChildren()) do
+        pcall(function()
+            if isMyBase(plot) then
+                return
+            end
+            local sign = plot:FindFirstChild("PlotSign")
+            if not sign then
+                return
+            end
+            local dist = (sign.Position - TARGET_POSITION).Magnitude
+            if dist < closestDist then
+                closestDist = dist
+                closestPlot = plot
+            end
+        end)
+    end
+    return closestPlot
+end
+
+-- ======================== BRAINROT NAME LOOKUP ========================
+local STRUCTURAL_NAMES = {
+    Base = true, Claim = true, PodiumModel = true, AnimalPodiums = true,
+    PlotSign = true, Decorations = true, CashPad = true, Skin = true,
+    Model = true, FriendPanel = true, Purchases = true, Unlock = true,
+    InvisibleWalls = true, Laser = true, LaserHitbox = true, MainRoot = true,
+    Spawn = true, DeliveryHitbox = true, Multiplier = true, AnimalTarget = true,
+    StealHitbox = true, Slope = true
+}
+
+local function getBrainrotName(podium)
+    if not podium then
+        return nil
+    end
+    local base = podium:FindFirstChild("Base")
+    local spawnPart = base and base:FindFirstChild("Spawn")
+    if not spawnPart then
+        return nil
+    end
+    local spawnPos = spawnPart.Position
+    local plot = getNearestEnemyPlot()
+    if not plot then
+        return nil
+    end
+    local bestName, bestDist = nil, math.huge
+    for _, child in ipairs(plot:GetChildren()) do
+        if child:IsA("Model") and not STRUCTURAL_NAMES[child.Name] then
+            local fakeRoot = child:FindFirstChild("FakeRootPart")
+            if fakeRoot then
+                local dist = (fakeRoot.Position - spawnPos).Magnitude
+                if dist < bestDist then
+                    bestDist = dist
+                    bestName = child.Name
+                end
+            end
+        end
+    end
+    return (bestDist < 8) and bestName or nil
+end
+
+local function getBrainrotForSlot(slot)
+    local plot = getNearestEnemyPlot()
+    if not plot then
+        return nil
+    end
+    local podiums = plot:FindFirstChild("AnimalPodiums")
+    if not podiums then
+        return nil
+    end
+    local podium = podiums:FindFirstChild(tostring(slot))
+    if not podium then
+        return nil
+    end
+    return getBrainrotName(podium)
+end
+
+local function getGenerationForSlot(slot)
+    local brName = getBrainrotForSlot(slot)
+    if not brName then
+        return nil
+    end
+    local debris = workspace:FindFirstChild("Debris")
+    if not debris then
+        return nil
+    end
+    for _, child in ipairs(debris:GetChildren()) do
+        local overhead = child:FindFirstChild("AnimalOverhead")
+        if overhead then
+            local displayLabel = overhead:FindFirstChild("DisplayName")
+            local genLabel = overhead:FindFirstChild("Generation")
+            if displayLabel and displayLabel:IsA("TextLabel") and genLabel and genLabel:IsA("TextLabel") then
+                if displayLabel.Text == brName then
+                    return genLabel.Text
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function getFakeRootForSlot(slot)
+    local plot = getNearestEnemyPlot()
+    if not plot then
+        return nil
+    end
+    local podiums = plot:FindFirstChild("AnimalPodiums")
+    if not podiums then
+        return nil
+    end
+    local podium = podiums:FindFirstChild(tostring(slot))
+    if not podium then
+        return nil
+    end
+    local base = podium:FindFirstChild("Base")
+    local spawnPart = base and base:FindFirstChild("Spawn")
+    if not spawnPart then
+        return nil
+    end
+    local spawnPos = spawnPart.Position
+    local bestFR, bestDist = nil, math.huge
+    for _, child in ipairs(plot:GetChildren()) do
+        if child:IsA("Model") and not STRUCTURAL_NAMES[child.Name] then
+            local fakeRoot = child:FindFirstChild("FakeRootPart")
+            if fakeRoot then
+                local dist = (fakeRoot.Position - spawnPos).Magnitude
+                if dist < bestDist then
+                    bestDist = dist
+                    bestFR = fakeRoot
+                end
+            end
+        end
+    end
+    return (bestDist < 8) and bestFR or nil
+end
+
+local function findESPPodium()
+    local plot = getNearestEnemyPlot()
+    if not plot then
+        return nil
+    end
+    local podiums = plot:FindFirstChild("AnimalPodiums")
+    if not podiums then
+        return nil
+    end
+    return podiums:FindFirstChild(tostring(SELECTED_SLOT))
+end
+
+local function findTargetPodium()
+    local plot = getNearestEnemyPlot()
+    if not plot then
+        return nil
+    end
+    local podiums = plot:FindFirstChild("AnimalPodiums")
+    if not podiums then
+        return nil
+    end
+    local podium = podiums:FindFirstChild(tostring(SELECTED_SLOT))
+    if not podium then
+        return nil
+    end
+    local prompt = getPromptFromPodium(podium)
+    if not prompt then
+        return nil
+    end
+    return podium
+end
+
+local function getOrCachePrompt(podium)
+    local uid = podium:GetFullName()
+    local cached = PromptMemoryCache[uid]
+    if cached and cached.Parent then
+        return cached
+    end
+    local prompt = getPromptFromPodium(podium)
+    if not prompt then
+        return nil
+    end
+    if not originalDurations[prompt] then
+        originalDurations[prompt] = prompt.HoldDuration
+    end
+    prompt.HoldDuration = 0
+    PromptMemoryCache[uid] = prompt
+    ensureStealCallbacks(prompt)
+    return prompt
+end
+
+-- ======================== ESP ========================
+local espOrb, espGlow, espBillboard, espLabel
+
+local function removeESP()
+    if espOrb and espOrb.Parent then
+        espOrb:Destroy()
+    end
+    if espGlow and espGlow.Parent then
+        espGlow:Destroy()
+    end
+    if espBillboard and espBillboard.Parent then
+        espBillboard:Destroy()
+    end
+    espOrb = nil
+    espGlow = nil
+    espBillboard = nil
+    espLabel = nil
+end
+
+local function placeESP(podium)
+    removeESP()
+    local base = findBasePart(podium)
+    if not base then
+        return
+    end
+    local OC = Color3.fromRGB(255, 120, 0)
+    local OS = Vector3.new(1.1, 1.1, 1.1)
+    local basePos = base.Position + Vector3.new(0, 3.5, 0)
+    espOrb = Instance.new("Part")
+    espOrb.Name = "HaloOrb"
+    espOrb.Shape = Enum.PartType.Ball
+    espOrb.Anchored = true
+    espOrb.CanCollide = false
+    espOrb.CanQuery = false
+    espOrb.CanTouch = false
+    espOrb.CastShadow = false
+    espOrb.Size = OS
+    espOrb.CFrame = CFrame.new(basePos)
+    espOrb.Color = OC
+    espOrb.Material = Enum.Material.Neon
+    espOrb.Transparency = 0
+    espOrb.Parent = workspace
+    espGlow = Instance.new("Part")
+    espGlow.Name = "HaloOrbGlow"
+    espGlow.Shape = Enum.PartType.Ball
+    espGlow.Anchored = true
+    espGlow.CanCollide = false
+    espGlow.CanQuery = false
+    espGlow.CanTouch = false
+    espGlow.CastShadow = false
+    espGlow.Size = OS * 1.9
+    espGlow.CFrame = CFrame.new(basePos)
+    espGlow.Color = OC
+    espGlow.Material = Enum.Material.Neon
+    espGlow.Transparency = 0.72
+    espGlow.Parent = workspace
+    espBillboard = Instance.new("BillboardGui", base)
+    espBillboard.Name = "HaloBillboard"
+    espBillboard.AlwaysOnTop = true
+    espBillboard.Size = UDim2.fromOffset(220, 36)
+    espBillboard.LightInfluence = 0
+    espBillboard.MaxDistance = 200
+    espBillboard.StudsOffsetWorldSpace = Vector3.new(0, 5.2, 0)
+    espLabel = Instance.new("TextLabel", espBillboard)
+    espLabel.Size = UDim2.fromScale(1, 1)
+    espLabel.BackgroundTransparency = 1
+    espLabel.Text = "Slot " .. SELECTED_SLOT
+    espLabel.Font = Enum.Font.GothamBold
+    espLabel.TextSize = 13
+    espLabel.TextColor3 = Color3.fromRGB(255, 130, 0)
+    espLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    espLabel.TextStrokeTransparency = 0
+    espLabel.TextXAlignment = Enum.TextXAlignment.Center
+    espLabel.TextWrapped = true
+    local espStroke = Instance.new("UIStroke", espLabel)
+    espStroke.Color = Color3.fromRGB(0, 0, 0)
+    espStroke.Thickness = 1.5
+    espStroke.Transparency = 0
+    espStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
+    task.spawn(function()
+        local t0 = tick()
+        while espOrb and espOrb.Parent do
+            local a = (math.sin((tick() - t0) * 1.8 * math.pi) + 1) * 0.5
+            espGlow.Transparency = 0.55 + (0.82 - 0.55) * (1 - a)
+            espOrb.Size = OS * (1 + a * 0.07)
+            RunService.Heartbeat:Wait()
+        end
+    end)
+end
+
+local currentESPPodium = nil
+task.spawn(function()
+    while true do
+        RunService.Heartbeat:Wait()
+        local podium = findESPPodium()
+        if podium ~= currentESPPodium then
+            currentESPPodium = podium
+            if podium then
+                placeESP(podium)
+            else
+                removeESP()
+            end
+        end
+        if espLabel then
+            local brainrot = getBrainrotName(currentESPPodium)
+            if brainrot then
+                local gen = getGenerationForSlot(SELECTED_SLOT)
+                espLabel.Text = gen and (brainrot .. "\n" .. gen) or brainrot
+            else
+                espLabel.Text = "Slot " .. SELECTED_SLOT
+            end
+        end
+    end
+end)
+
+-- ======================== INSTANT FLASH ========================
+local function doInstantFlash()
+    if isTab2TPRunning then
+        return
+    end
+    local podium = findTargetPodium()
+    if not podium then
+        return
+    end
+    local prompt = getOrCachePrompt(podium)
+    if not prompt then
+        return
+    end
+    if not ensureStealCallbacks(prompt) then
+        return
+    end
+    isTab2TPRunning = true
+    local tpPos = getTPForSlot(SELECTED_SLOT)
+    local camCF, camFOV = getCamForSlot(SELECTED_SLOT)
+    local function getChar()
+        local c = LocalPlayer.Character
+        if not c then
+            return nil, nil, nil
+        end
+        return c, c:FindFirstChildOfClass("Humanoid"), c:FindFirstChild("HumanoidRootPart")
+    end
+    local c, hum, hrp = getChar()
+    if not c or not hum or not hrp then
+        isTab2TPRunning = false
+        return
+    end
+    local carpet = LocalPlayer.Backpack:FindFirstChild(REQUIRED_TOOL) or c:FindFirstChild(REQUIRED_TOOL)
+    if not carpet then
+        for _, item in ipairs(LocalPlayer.Backpack:GetChildren()) do
+            if item:IsA("Tool") and (item.Name:lower():find("flying") or item.Name:lower():find("carpet")) then
+                carpet = item
+                break
+            end
+        end
+    end
+    if not carpet then
+        isTab2TPRunning = false
+        return
+    end
+    if carpet.Parent ~= c then
+        hum:EquipTool(carpet)
+        task.wait(0.09)
+    end
+    local c2, hum2, hrp2 = getChar()
+    if not c2 or not hum2 or not hrp2 then
+        isTab2TPRunning = false
+        return
+    end
+    local spotB = (SELECTED_SLOT >= 1 and SELECTED_SLOT <= 4) and SPOT_B_1_4 or
+        (SELECTED_SLOT == 5) and SPOT_B_5 or
+        (SELECTED_SLOT == 6 or SELECTED_SLOT == 7) and SPOT_B_7 or
+        SPOT_B_8_10
+    hum2:ChangeState(Enum.HumanoidStateType.Physics)
+    for _ = 1, 8 do
+        hrp2.CFrame = spotB
+        hrp2.AssemblyLinearVelocity = Vector3.zero
+        hrp2.AssemblyAngularVelocity = Vector3.zero
+        task.wait(0.03)
+    end
+    hrp2.AssemblyLinearVelocity = Vector3.zero
+    hrp2.AssemblyAngularVelocity = Vector3.zero
+    task.wait(0.05)
+    lockCamera(camCF, camFOV)
+    local c3, hum3, hrp3 = getChar()
+    if not c3 or not hum3 or not hrp3 then
+        unlockCamera()
+        isTab2TPRunning = false
+        return
+    end
+    local flashTool = nil
+    for _ = 1, 3 do
+        flashTool = LocalPlayer.Backpack:FindFirstChild(FLASH_TOOL) or c3:FindFirstChild(FLASH_TOOL)
+        if not flashTool then
+            task.wait(0.1)
+        else
+            if flashTool.Parent ~= c3 then
+                hum3:EquipTool(flashTool)
+                local t = tick()
+                repeat
+                    task.wait(0.03)
+                until flashTool.Parent == c3 or tick() - t > 1
+            end
+            if flashTool.Parent == c3 then
+                break
+            end
+            flashTool = nil
+        end
+    end
+    if not flashTool then
+        unlockCamera()
+        isTab2TPRunning = false
+        return
+    end
+    hrp3.CFrame = CFrame.new(tpPos)
+    hrp3.AssemblyLinearVelocity = Vector3.zero
+    hrp3.AssemblyAngularVelocity = Vector3.zero
+    if AUTO_BLOCK then
+        local bt = findNearestEnemy()
+        if bt then
+            task.spawn(function()
+                NavigationBlock(bt)
+            end)
+            RunService.RenderStepped:Wait()
+            RunService.RenderStepped:Wait()
+        end
+    end
+    if AUTO_BALLOON and adminRemote then
+        local balloonTarget = findNearestEnemy()
+        if balloonTarget then
+            local cmdToSend = BALLOON_CMD
+            task.delay(0.09, function()
+                sendAdminCmd(balloonTarget, cmdToSend)
+            end)
+        end
+    end
+    flashTool:Activate()
+    unlockCamera()
+    local rc = LocalPlayer.Character
+    local rh = rc and rc:FindFirstChildOfClass("Humanoid")
+    if rh then
+        rh:ChangeState(Enum.HumanoidStateType.Running)
+    end
+    task.wait(STEAL_DELAY)
+    local freshPodium = findTargetPodium()
+    if freshPodium then
+        local fp = getOrCachePrompt(freshPodium)
+        if fp and InternalStealCache[fp] then
+            executeSteal(fp)
+        end
+    end
+    task.wait(1)
+    isTab2TPRunning = false
+end
+
+-- ======================== GUI ========================
+local function buildGUI()
+    local W = 196
+    local TS = TweenService
+    local UIS = UserInputService
+
+    local BG = Color3.fromRGB(242, 234, 195)
+    local SURF = Color3.fromRGB(250, 244, 210)
+    local RAIS = Color3.fromRGB(255, 250, 225)
+    local BRD = Color3.fromRGB(210, 190, 140)
+    local ACC = Color3.fromRGB(195, 162, 72)
+    local ACCD = Color3.fromRGB(160, 130, 52)
+    local TXT = Color3.fromRGB(72, 58, 22)
+    local SUB = Color3.fromRGB(160, 142, 95)
+    local ON = Color3.fromRGB(195, 162, 72)
+    local OFF = Color3.fromRGB(222, 208, 162)
+    local STAR_ON = Color3.fromRGB(220, 175, 30)
+    local STAR_OFF = Color3.fromRGB(195, 180, 140)
+
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "HaloHubUI"
+    screenGui.ResetOnSpawn = false
+    screenGui.DisplayOrder = 999999
+    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    screenGui.IgnoreGuiInset = true
+    screenGui.Parent = PlayerGui
+
+    local wrapper = Instance.new("Frame", screenGui)
+    wrapper.Name = "Wrapper"
+    wrapper.Size = UDim2.fromOffset(W, 300)
+    wrapper.Position = UDim2.new(1, -(W + 14), 0.5, -150)
+    wrapper.BackgroundTransparency = 1
+    wrapper.Active = true
+    wrapper.Draggable = true
+    wrapper.ZIndex = 1
+
+    local panel = Instance.new("Frame", wrapper)
+    panel.Size = UDim2.fromOffset(W, 300)
+    panel.BackgroundColor3 = BG
+    panel.BorderSizePixel = 0
+    panel.ZIndex = 2
+    panel.ClipsDescendants = true
+    local panelCorner = Instance.new("UICorner", panel)
+    panelCorner.CornerRadius = UDim.new(0, 18)
+    local panelStroke = Instance.new("UIStroke", panel)
+    panelStroke.Color = Color3.fromRGB(90, 85, 68)
+    panelStroke.Thickness = 1
+    panelStroke.Transparency = 0
+    panelStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+
+    local hdr = Instance.new("Frame", panel)
+    hdr.Size = UDim2.new(1, 0, 0, 48)
+    hdr.BackgroundTransparency = 1
+    hdr.BorderSizePixel = 0
+    hdr.ZIndex = 3
+
+    local hdrTitle = Instance.new("TextLabel", hdr)
+    hdrTitle.Size = UDim2.new(1, -50, 0, 22)
+    hdrTitle.Position = UDim2.fromOffset(16, 8)
+    hdrTitle.BackgroundTransparency = 1
+    hdrTitle.Text = "HALO HUB"
+    hdrTitle.TextColor3 = Color3.fromRGB(68, 52, 18)
+    hdrTitle.Font = Enum.Font.GothamBlack
+    hdrTitle.TextSize = 15
+    hdrTitle.TextXAlignment = Enum.TextXAlignment.Left
+    hdrTitle.ZIndex = 4
+
+    local hdrSub = Instance.new("TextLabel", hdr)
+    hdrSub.Size = UDim2.new(1, -50, 0, 11)
+    hdrSub.Position = UDim2.fromOffset(16, 31)
+    hdrSub.BackgroundTransparency = 1
+    hdrSub.Text = "INSTANT FLASH"
+    hdrSub.TextColor3 = Color3.fromRGB(175, 142, 55)
+    hdrSub.Font = Enum.Font.GothamBold
+    hdrSub.TextSize = 8
+    hdrSub.TextXAlignment = Enum.TextXAlignment.Left
+    hdrSub.TextTransparency = 0.35
+    hdrSub.ZIndex = 4
+
+    local minBtn = Instance.new("TextButton", hdr)
+    minBtn.Size = UDim2.fromOffset(20, 20)
+    minBtn.AnchorPoint = Vector2.new(1, 0.5)
+    minBtn.Position = UDim2.new(1, -10, 0.5, 0)
+    minBtn.BackgroundColor3 = Color3.fromRGB(225, 205, 148)
+    minBtn.BorderSizePixel = 0
+    minBtn.Text = ""
+    minBtn.AutoButtonColor = false
+    minBtn.ZIndex = 5
+    Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 6)
+    local minStroke = Instance.new("UIStroke", minBtn)
+    minStroke.Color = Color3.fromRGB(185, 158, 95)
+    minStroke.Thickness = 1
+    minStroke.Transparency = 0.5
+    minStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    local minBar = Instance.new("Frame", minBtn)
+    minBar.Size = UDim2.fromOffset(10, 2)
+    minBar.AnchorPoint = Vector2.new(0.5, 0.5)
+    minBar.Position = UDim2.new(0.5, 0, 0.5, 0)
+    minBar.BackgroundColor3 = Color3.fromRGB(138, 108, 35)
+    minBar.BorderSizePixel = 0
+    minBar.ZIndex = 6
+    Instance.new("UICorner", minBar).CornerRadius = UDim.new(1, 0)
+
+    local TI_SMOOTH = TweenInfo.new(0.18, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+    local TI_FAST = TweenInfo.new(0.08, Enum.EasingStyle.Quint)
+    minBtn.MouseEnter:Connect(function()
+        TS:Create(minBtn, TI_SMOOTH, {BackgroundColor3 = Color3.fromRGB(208, 182, 118)}):Play()
+        TS:Create(minStroke, TI_SMOOTH, {Transparency = 0.2}):Play()
+        TS:Create(minBar, TI_SMOOTH, {BackgroundColor3 = Color3.fromRGB(108, 82, 18)}):Play()
+    end)
+    minBtn.MouseLeave:Connect(function()
+        TS:Create(minBtn, TI_SMOOTH, {BackgroundColor3 = Color3.fromRGB(225, 205, 148)}):Play()
+        TS:Create(minStroke, TI_SMOOTH, {Transparency = 0.5}):Play()
+        TS:Create(minBar, TI_SMOOTH, {BackgroundColor3 = Color3.fromRGB(138, 108, 35)}):Play()
+    end)
+    minBtn.MouseButton1Down:Connect(function()
+        TS:Create(minBtn, TI_FAST, {BackgroundColor3 = Color3.fromRGB(188, 162, 98), Size = UDim2.fromOffset(18, 18)}):Play()
+        TS:Create(minBar, TI_FAST, {Size = UDim2.fromOffset(7, 2)}):Play()
+    end)
+    minBtn.MouseButton1Up:Connect(function()
+        TS:Create(minBtn, TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {BackgroundColor3 = Color3.fromRGB(208, 182, 118), Size = UDim2.fromOffset(20, 20)}):Play()
+        TS:Create(minBar, TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.fromOffset(10, 2)}):Play()
+    end)
+
+    local pingPill = Instance.new("Frame", hdr)
+    pingPill.Size = UDim2.fromOffset(52, 16)
+    pingPill.AnchorPoint = Vector2.new(1, 0)
+    pingPill.Position = UDim2.new(1, -38, 0, 9)
+    pingPill.BackgroundColor3 = Color3.fromRGB(235, 225, 178)
+    pingPill.BorderSizePixel = 0
+    pingPill.ZIndex = 4
+    Instance.new("UICorner", pingPill).CornerRadius = UDim.new(1, 0)
+    local pingStroke = Instance.new("UIStroke", pingPill)
+    pingStroke.Color = Color3.fromRGB(195, 162, 72)
+    pingStroke.Thickness = 1
+    pingStroke.Transparency = 0.4
+    pingStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    local pingDot = Instance.new("Frame", pingPill)
+    pingDot.Size = UDim2.fromOffset(5, 5)
+    pingDot.AnchorPoint = Vector2.new(0, 0.5)
+    pingDot.Position = UDim2.new(0, 5, 0.5, 0)
+    pingDot.BackgroundColor3 = Color3.fromRGB(85, 175, 85)
+    pingDot.BorderSizePixel = 0
+    pingDot.ZIndex = 5
+    Instance.new("UICorner", pingDot).CornerRadius = UDim.new(1, 0)
+    local pingLbl = Instance.new("TextLabel", pingPill)
+    pingLbl.Size = UDim2.new(1, -14, 1, 0)
+    pingLbl.Position = UDim2.fromOffset(13, 0)
+    pingLbl.BackgroundTransparency = 1
+    pingLbl.Text = "--"
+    pingLbl.TextColor3 = Color3.fromRGB(110, 88, 28)
+    pingLbl.Font = Enum.Font.GothamBold
+    pingLbl.TextSize = 8
+    pingLbl.TextXAlignment = Enum.TextXAlignment.Left
+    pingLbl.ZIndex = 5
+    task.spawn(function()
+        while pingLbl.Parent do
+            local p = math.floor(LocalPlayer:GetNetworkPing() * 1000)
+            local clr = p < 60 and Color3.fromRGB(85, 175, 85) or (p < 120 and Color3.fromRGB(192, 162, 48) or Color3.fromRGB(190, 70, 70))
+            pingLbl.Text = p .. "ms"
+            pingLbl.TextColor3 = Color3.fromRGB(110, 88, 28)
+            pingDot.BackgroundColor3 = clr
+            task.wait(1)
+        end
+    end)
+
+    local content = Instance.new("Frame", panel)
+    content.Size = UDim2.new(1, -20, 0, 0)
+    content.Position = UDim2.new(0, 10, 0, 56)
+    content.BackgroundTransparency = 1
+    content.AutomaticSize = Enum.AutomaticSize.Y
+    content.ZIndex = 3
+    local cLayout = Instance.new("UIListLayout", content)
+    cLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    cLayout.Padding = UDim.new(0, 4)
+
+    local function mkRow(lo, h)
+        local r = Instance.new("Frame", content)
+        r.Size = UDim2.new(1, 0, 0, h or 28)
+        r.BackgroundColor3 = SURF
+        r.BorderSizePixel = 0
+        r.ZIndex = 4
+        r.LayoutOrder = lo
+        Instance.new("UICorner", r).CornerRadius = UDim.new(0, 8)
+        return r
+    end
+
+    local function mkSep(lo)
+        local s = Instance.new("Frame", content)
+        s.Size = UDim2.new(1, 0, 0, 1)
+        s.BackgroundColor3 = BRD
+        s.BorderSizePixel = 0
+        s.ZIndex = 4
+        s.LayoutOrder = lo
+    end
+
+    local function mkLbl(lo, txt)
+        local f = Instance.new("Frame", content)
+        f.Size = UDim2.new(1, 0, 0, 14)
+        f.BackgroundTransparency = 1
+        f.ZIndex = 4
+        f.LayoutOrder = lo
+        local l = Instance.new("TextLabel", f)
+        l.Size = UDim2.fromScale(1, 1)
+        l.BackgroundTransparency = 1
+        l.Text = txt
+        l.TextColor3 = SUB
+        l.Font = Enum.Font.GothamBold
+        l.TextSize = 8
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.ZIndex = 5
+    end
+
+    local function mkToggle(lo, lbl, val, cb)
+        local r = mkRow(lo)
+        local l = Instance.new("TextLabel", r)
+        l.Size = UDim2.new(1, -52, 1, 0)
+        l.Position = UDim2.fromOffset(10, 0)
+        l.BackgroundTransparency = 1
+        l.Text = lbl
+        l.TextColor3 = TXT
+        l.Font = Enum.Font.GothamSemibold
+        l.TextSize = 11
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.ZIndex = 5
+        local track = Instance.new("Frame", r)
+        track.Size = UDim2.fromOffset(28, 14)
+        track.Position = UDim2.new(1, -36, 0.5, -7)
+        track.BackgroundColor3 = val and ON or OFF
+        track.BorderSizePixel = 0
+        track.ZIndex = 5
+        Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
+        local knob = Instance.new("Frame", track)
+        knob.Size = UDim2.fromOffset(10, 10)
+        knob.AnchorPoint = Vector2.new(0, 0.5)
+        knob.Position = val and UDim2.new(1, -12, 0.5, 0) or UDim2.new(0, 2, 0.5, 0)
+        knob.BackgroundColor3 = Color3.fromRGB(255, 252, 235)
+        knob.BorderSizePixel = 0
+        knob.ZIndex = 6
+        Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+        local btn = Instance.new("TextButton", r)
+        btn.Size = UDim2.fromScale(1, 1)
+        btn.BackgroundTransparency = 1
+        btn.Text = ""
+        btn.ZIndex = 7
+        local state = {val}
+        local function set(v)
+            state[1] = v
+            TS:Create(track, TweenInfo.new(0.22, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {BackgroundColor3 = v and ON or OFF}):Play()
+            TS:Create(knob, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Position = v and UDim2.new(1, -12, 0.5, 0) or UDim2.new(0, 2, 0.5, 0)}):Play()
+            if cb then
+                cb(v)
+            end
+        end
+        btn.MouseButton1Click:Connect(function()
+            set(not state[1])
+        end)
+        btn.MouseEnter:Connect(function()
+            TS:Create(r, TweenInfo.new(0.18, Enum.EasingStyle.Quint), {BackgroundColor3 = RAIS}):Play()
+        end)
+        btn.MouseLeave:Connect(function()
+            TS:Create(r, TweenInfo.new(0.18, Enum.EasingStyle.Quint), {BackgroundColor3 = SURF}):Play()
+        end)
+        return r, set
+    end
+
+    local FDEF
+
+    local function saveAll()
+        local function px(k)
+            return FDEF and FDEF[k] and FDEF[k].x or savedCfg[k .. "BtnX"] or nil
+        end
+        local function py(k)
+            return FDEF and FDEF[k] and FDEF[k].y or savedCfg[k .. "BtnY"] or nil
+        end
+        saveConfig({
+            slot = SELECTED_SLOT,
+            autoBlock = AUTO_BLOCK,
+            fps = FPS_ON,
+            autoBalloon = AUTO_BALLOON,
+            balloonCmd = BALLOON_CMD,
+            autoMinimize = AUTO_MINIMIZE,
+            floatLocked = FLOAT_LOCKED,
+            flashBtnX = px("flash"),
+            flashBtnY = py("flash"),
+            resetBtnX = px("reset"),
+            resetBtnY = py("reset"),
+            blockBtnX = px("block"),
+            blockBtnY = py("block"),
+            slotBtnX = px("slot"),
+            slotBtnY = py("slot"),
+            balloonBtnX = px("balloon"),
+            balloonBtnY = py("balloon"),
+        })
+    end
+
+    mkSep(1)
+    mkLbl(2, "MAIN")
+    local _, setBlock = mkToggle(3, "Auto Block", AUTO_BLOCK, function(v)
+        AUTO_BLOCK = v
+        saveAll()
+    end)
+    local _, setBalloon = mkToggle(4, "Auto Balloon", AUTO_BALLOON, function(v)
+        AUTO_BALLOON = v
+        saveAll()
+    end)
+    local cmdRow = mkRow(5)
+    local cmdLbl = Instance.new("TextLabel", cmdRow)
+    cmdLbl.Size = UDim2.new(1, -92, 1, 0)
+    cmdLbl.Position = UDim2.fromOffset(10, 0)
+    cmdLbl.BackgroundTransparency = 1
+    cmdLbl.Text = "Command"
+    cmdLbl.TextColor3 = SUB
+    cmdLbl.Font = Enum.Font.GothamSemibold
+    cmdLbl.TextSize = 10
+    cmdLbl.TextXAlignment = Enum.TextXAlignment.Left
+    cmdLbl.ZIndex = 5
+    local BCMDS = {"balloon", "ragdoll"}
+    local bcBtns = {}
+    for i, cmd in ipairs(BCMDS) do
+        local p = Instance.new("TextButton", cmdRow)
+        p.Size = UDim2.fromOffset(40, 18)
+        p.AnchorPoint = Vector2.new(1, 0.5)
+        p.Position = UDim2.new(1, -(i == 1 and 46 or 3), 0.5, 0)
+        p.BackgroundColor3 = BALLOON_CMD == cmd and ON or OFF
+        p.BorderSizePixel = 0
+        p.Text = cmd
+        p.AutoButtonColor = false
+        p.ZIndex = 6
+        p.Font = Enum.Font.GothamBold
+        p.TextSize = 9
+        p.TextColor3 = BALLOON_CMD == cmd and Color3.fromRGB(255, 250, 235) or Color3.fromRGB(150, 135, 95)
+        Instance.new("UICorner", p).CornerRadius = UDim.new(0, 5)
+        table.insert(bcBtns, {pill = p, cmd = cmd})
+        p.Activated:Connect(function()
+            BALLOON_CMD = cmd
+            saveAll()
+            for _, ref in ipairs(bcBtns) do
+                local s = ref.cmd == cmd
+                TS:Create(ref.pill, TweenInfo.new(0.15, Enum.EasingStyle.Quint), {BackgroundColor3 = s and ON or OFF, TextColor3 = s and Color3.fromRGB(255, 250, 235) or Color3.fromRGB(150, 135, 95)}):Play()
+            end
+        end)
+    end
+
+    mkSep(6)
+    mkLbl(7, "SETTINGS")
+    local _, setFPS = mkToggle(8, "FPS Boost", FPS_ON, function(v)
+        FPS_ON = v
+        saveAll()
+        if v then
+            applyFPS()
+        else
+            removeFPS()
+        end
+    end)
+    local _, setAutoMin = mkToggle(9, "Auto Hide", AUTO_MINIMIZE, function(v)
+        AUTO_MINIMIZE = v
+        saveAll()
+    end)
+    local _, setLock = mkToggle(10, "Lock Buttons", FLOAT_LOCKED, function(v)
+        FLOAT_LOCKED = v
+        saveAll()
+    end)
+
+    mkSep(11)
+    mkLbl(12, "PODIUM SLOT")
+    local dropRow = mkRow(13)
+    local dropCurLbl = Instance.new("TextLabel", dropRow)
+    dropCurLbl.Size = UDim2.new(1, -32, 1, 0)
+    dropCurLbl.Position = UDim2.fromOffset(10, 0)
+    dropCurLbl.BackgroundTransparency = 1
+    dropCurLbl.Text = "Slot " .. SELECTED_SLOT
+    dropCurLbl.TextColor3 = Color3.fromRGB(165, 135, 50)
+    dropCurLbl.Font = Enum.Font.GothamBold
+    dropCurLbl.TextSize = 11
+    dropCurLbl.TextXAlignment = Enum.TextXAlignment.Left
+    dropCurLbl.ZIndex = 5
+    local dropArrow = Instance.new("TextLabel", dropRow)
+    dropArrow.Size = UDim2.fromOffset(22, 28)
+    dropArrow.Position = UDim2.new(1, -24, 0, 0)
+    dropArrow.BackgroundTransparency = 1
+    dropArrow.Text = "▾"
+    dropArrow.TextColor3 = Color3.fromRGB(155, 138, 92)
+    dropArrow.Font = Enum.Font.GothamBold
+    dropArrow.TextSize = 11
+    dropArrow.ZIndex = 5
+    local dropTrigger = Instance.new("TextButton", dropRow)
+    dropTrigger.Size = UDim2.fromScale(1, 1)
+    dropTrigger.BackgroundTransparency = 1
+    dropTrigger.Text = ""
+    dropTrigger.ZIndex = 6
+    dropTrigger.MouseEnter:Connect(function()
+        TS:Create(dropRow, TweenInfo.new(0.18, Enum.EasingStyle.Quint), {BackgroundColor3 = RAIS}):Play()
+        TS:Create(dropArrow, TweenInfo.new(0.1), {TextColor3 = Color3.fromRGB(165, 135, 50)}):Play()
+    end)
+    dropTrigger.MouseLeave:Connect(function()
+        TS:Create(dropRow, TweenInfo.new(0.18, Enum.EasingStyle.Quint), {BackgroundColor3 = SURF}):Play()
+        TS:Create(dropArrow, TweenInfo.new(0.1), {TextColor3 = SUB}):Play()
+    end)
+    local spacer = Instance.new("Frame", content)
+    spacer.Size = UDim2.new(1, 0, 0, 4)
+    spacer.BackgroundTransparency = 1
+    spacer.ZIndex = 4
+    spacer.LayoutOrder = 16
+
+    local VALID_SLOTS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+    local ITEM_H = 28
+    local dropOpen = false
+
+    local dropCanvas = Instance.new("CanvasGroup", screenGui)
+    dropCanvas.BackgroundColor3 = Color3.fromRGB(250, 244, 210)
+    dropCanvas.BorderSizePixel = 0
+    dropCanvas.ZIndex = 999
+    dropCanvas.GroupTransparency = 1
+    dropCanvas.Visible = false
+    dropCanvas.Size = UDim2.fromOffset(W - 20, 0)
+    Instance.new("UICorner", dropCanvas).CornerRadius = UDim.new(0, 10)
+    local dsk = Instance.new("UIStroke", dropCanvas)
+    dsk.Color = Color3.fromRGB(205, 185, 130)
+    dsk.Thickness = 1
+    dsk.Transparency = 0
+    dsk.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+
+    local dScroll = Instance.new("ScrollingFrame", dropCanvas)
+    dScroll.Size = UDim2.fromScale(1, 1)
+    dScroll.BackgroundTransparency = 1
+    dScroll.BorderSizePixel = 0
+    dScroll.ZIndex = 1000
+    dScroll.ScrollBarThickness = 2
+    dScroll.ScrollBarImageColor3 = Color3.fromRGB(185, 155, 65)
+    dScroll.CanvasSize = UDim2.fromOffset(0, #VALID_SLOTS * ITEM_H)
+    dScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+    dScroll.ElasticBehavior = Enum.ElasticBehavior.WhenScrollable
+    local dL = Instance.new("UIListLayout", dScroll)
+    dL.SortOrder = Enum.SortOrder.LayoutOrder
+    dL.Padding = UDim.new(0, 1)
+    local dPad = Instance.new("UIPadding", dScroll)
+    dPad.PaddingTop = UDim.new(0, 3)
+    dPad.PaddingBottom = UDim.new(0, 3)
+    dPad.PaddingLeft = UDim.new(0, 4)
+    dPad.PaddingRight = UDim.new(0, 4)
+
+    local allStarBtns = {}
+    local allPanelItems = {}
+    local allFloatItems = {}
+
+    local function getSlotDisplayText(sn)
+        local br = getBrainrotForSlot(sn)
+        if not br then
+            return "Slot " .. sn
+        end
+        local gen = getGenerationForSlot(sn)
+        if gen then
+            return br .. " | " .. gen
+        end
+        return br
+    end
+
+    local function refreshAllStars()
+        for _, ref in ipairs(allStarBtns) do
+            local isTracked = TRACKED_SLOT ~= nil and ref.slot == TRACKED_SLOT
+            TS:Create(ref.btn, TweenInfo.new(0.15, Enum.EasingStyle.Quint), {
+                TextColor3 = isTracked and STAR_ON or STAR_OFF,
+                BackgroundColor3 = isTracked and Color3.fromRGB(252, 238, 170) or Color3.fromRGB(238, 228, 185),
+            }):Play()
+        end
+    end
+
+    local function onStarClick(sn)
+        local brAtSlot = getBrainrotForSlot(sn)
+        if not brAtSlot then
+            return
+        end
+        if TRACKED_SLOT == sn and TRACKED_BRAINROT == brAtSlot then
+            TRACKED_BRAINROT = nil
+            TRACKED_SLOT = nil
+            TRACKED_INSTANCE = nil
+        else
+            TRACKED_BRAINROT = brAtSlot
+            TRACKED_SLOT = sn
+            TRACKED_INSTANCE = getFakeRootForSlot(sn)
+        end
+        refreshAllStars()
+    end
+
+    for idx, sn in ipairs(VALID_SLOTS) do
+        local isSel = sn == SELECTED_SLOT
+        local row = Instance.new("Frame", dScroll)
+        row.Size = UDim2.new(1, 0, 0, ITEM_H - 2)
+        row.BackgroundColor3 = Color3.fromRGB(238, 228, 185)
+        row.BackgroundTransparency = isSel and 0 or 1
+        row.BorderSizePixel = 0
+        row.ZIndex = 1001
+        row.LayoutOrder = idx
+        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
+
+        local dot = Instance.new("Frame", row)
+        dot.Size = UDim2.fromOffset(3, 3)
+        dot.AnchorPoint = Vector2.new(0, 0.5)
+        dot.Position = UDim2.new(0, 6, 0.5, 0)
+        dot.BackgroundColor3 = Color3.fromRGB(185, 155, 65)
+        dot.BorderSizePixel = 0
+        dot.ZIndex = 1002
+        dot.BackgroundTransparency = isSel and 0 or 1
+        Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
+
+        local starBtn = Instance.new("TextButton", row)
+        starBtn.Size = UDim2.fromOffset(18, 18)
+        starBtn.AnchorPoint = Vector2.new(1, 0.5)
+        starBtn.Position = UDim2.new(1, -4, 0.5, 0)
+        starBtn.BackgroundColor3 = Color3.fromRGB(238, 228, 185)
+        starBtn.BorderSizePixel = 0
+        starBtn.Text = "★"
+        starBtn.Font = Enum.Font.GothamBold
+        starBtn.TextSize = 11
+        starBtn.TextColor3 = STAR_OFF
+        starBtn.AutoButtonColor = false
+        starBtn.ZIndex = 1005
+        Instance.new("UICorner", starBtn).CornerRadius = UDim.new(0, 4)
+
+        local l = Instance.new("TextLabel", row)
+        l.Size = UDim2.new(1, -36, 1, 0)
+        l.Position = UDim2.fromOffset(14, 0)
+        l.BackgroundTransparency = 1
+        l.Text = "Slot " .. sn
+        l.TextColor3 = isSel and Color3.fromRGB(165, 135, 50) or SUB
+        l.Font = Enum.Font.GothamSemibold
+        l.TextSize = 9
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.ZIndex = 1002
+        l.TextTruncate = Enum.TextTruncate.AtEnd
+
+        local b = Instance.new("TextButton", row)
+        b.Size = UDim2.new(1, -22, 1, 0)
+        b.BackgroundTransparency = 1
+        b.Text = ""
+        b.ZIndex = 1003
+
+        b.MouseEnter:Connect(function()
+            if sn ~= SELECTED_SLOT then
+                TS:Create(row, TweenInfo.new(0.1), {BackgroundTransparency = 0}):Play()
+                TS:Create(l, TweenInfo.new(0.1), {TextColor3 = Color3.fromRGB(62, 48, 16)}):Play()
+            end
+        end)
+        b.MouseLeave:Connect(function()
+            if sn ~= SELECTED_SLOT then
+                TS:Create(row, TweenInfo.new(0.1), {BackgroundTransparency = 1}):Play()
+                TS:Create(l, TweenInfo.new(0.1), {TextColor3 = Color3.fromRGB(150, 135, 95)}):Play()
+            end
+        end)
+        b.Activated:Connect(function()
+            SELECTED_SLOT = sn
+            local displayTxt = getSlotDisplayText(sn)
+            dropCurLbl.Text = displayTxt
+            saveAll()
+            currentESPPodium = nil
+            if espLabel then
+                espLabel.Text = displayTxt
+            end
+            for _, ref in ipairs(allPanelItems) do
+                local s = ref.slot == sn
+                TS:Create(ref.f, TweenInfo.new(0.15), {BackgroundTransparency = s and 0 or 1}):Play()
+                TS:Create(ref.d, TweenInfo.new(0.15), {BackgroundTransparency = s and 0 or 1}):Play()
+                TS:Create(ref.l, TweenInfo.new(0.15), {TextColor3 = s and ACC or SUB}):Play()
+            end
+            for _, ref in ipairs(allFloatItems) do
+                local s = ref.slot == sn
+                TS:Create(ref.r, TweenInfo.new(0.15), {BackgroundTransparency = s and 0 or 1}):Play()
+                TS:Create(ref.d, TweenInfo.new(0.15), {BackgroundTransparency = s and 0 or 1}):Play()
+                TS:Create(ref.l, TweenInfo.new(0.15), {TextColor3 = s and ACC or Color3.fromRGB(155, 138, 92)}):Play()
+            end
+            dropOpen = false
+            dropArrow.Text = "▾"
+            TS:Create(dropCanvas, TweenInfo.new(0.15, Enum.EasingStyle.Quint, Enum.EasingDirection.In), {GroupTransparency = 1, Size = UDim2.fromOffset(W - 20, 0)}):Play()
+            task.delay(0.15, function()
+                dropCanvas.Visible = false
+            end)
+        end)
+
+        starBtn.MouseButton1Click:Connect(function()
+            onStarClick(sn)
+        end)
+        starBtn.MouseEnter:Connect(function()
+            TS:Create(starBtn, TweenInfo.new(0.1), {TextColor3 = STAR_ON}):Play()
+        end)
+        starBtn.MouseLeave:Connect(function()
+            local isTracked = TRACKED_SLOT ~= nil and sn == TRACKED_SLOT
+            TS:Create(starBtn, TweenInfo.new(0.1), {TextColor3 = isTracked and STAR_ON or STAR_OFF}):Play()
+        end)
+
+        table.insert(allPanelItems, {f = row, d = dot, l = l, star = starBtn, slot = sn})
+        table.insert(allStarBtns, {btn = starBtn, slot = sn})
+    end
+
+    local function posDropCanvas()
+        local ap = dropRow.AbsolutePosition
+        local as = dropRow.AbsoluteSize
+        dropCanvas.Position = UDim2.fromOffset(ap.X, ap.Y + as.Y + 3)
+    end
+
+    RunService.Heartbeat:Connect(function()
+        if dropOpen and dropCanvas.Visible then
+            posDropCanvas()
+        end
+    end)
+    dropTrigger.MouseButton1Click:Connect(function()
+        dropOpen = not dropOpen
+        dropArrow.Text = dropOpen and "▴" or "▾"
+        if dropOpen then
+            posDropCanvas()
+            dropCanvas.GroupTransparency = 1
+            dropCanvas.Size = UDim2.fromOffset(W - 20, 0)
+            dropCanvas.Visible = true
+            TS:Create(dropCanvas, TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {GroupTransparency = 0, Size = UDim2.fromOffset(W - 20, #VALID_SLOTS * ITEM_H)}):Play()
+        else
+            TS:Create(dropCanvas, TweenInfo.new(0.15, Enum.EasingStyle.Quint, Enum.EasingDirection.In), {GroupTransparency = 1, Size = UDim2.fromOffset(W - 20, 0)}):Play()
+            task.delay(0.15, function()
+                if not dropOpen then
+                    dropCanvas.Visible = false
+                end
+            end)
+        end
+    end)
+
+    local function resizePanel()
+        local h = content.AbsoluteSize.Y + 56 + 10
+        panel.Size = UDim2.fromOffset(W, h)
+        wrapper.Size = UDim2.fromOffset(W, h)
+    end
+    task.defer(resizePanel)
+    cLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        if not isMinimized then
+            resizePanel()
+        end
+    end)
+
+    local isMinimized = false
+    local function doMinimize(v, save)
+        isMinimized = v
+        local ti = TweenInfo.new(0.35, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+        if v then
+            TS:Create(panelCorner, ti, {CornerRadius = UDim.new(0, 24)}):Play()
+            TS:Create(panel, ti, {Size = UDim2.fromOffset(W, 46)}):Play()
+            TS:Create(wrapper, ti, {Size = UDim2.fromOffset(W, 46)}):Play()
+            TS:Create(minBtn, ti, {BackgroundColor3 = Color3.fromRGB(190, 165, 100)}):Play()
+            TS:Create(minBar, TweenInfo.new(0.2, Enum.EasingStyle.Quint), {Size = UDim2.fromOffset(8, 2)}):Play()
+        else
+            local h = content.AbsoluteSize.Y + 56 + 10
+            TS:Create(panelCorner, ti, {CornerRadius = UDim.new(0, 16)}):Play()
+            TS:Create(panel, ti, {Size = UDim2.fromOffset(W, h)}):Play()
+            TS:Create(wrapper, ti, {Size = UDim2.fromOffset(W, h)}):Play()
+            TS:Create(minBtn, ti, {BackgroundColor3 = Color3.fromRGB(225, 208, 158)}):Play()
+            TS:Create(minBar, TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.fromOffset(12, 2)}):Play()
+            task.delay(0.29, resizePanel)
+        end
+        if save then
+            saveAll()
+        end
+    end
+    minBtn.MouseButton1Click:Connect(function()
+        doMinimize(not isMinimized, false)
+    end)
+    if AUTO_MINIMIZE then
+        task.defer(function()
+            doMinimize(true, false)
+        end)
+    end
+
+    local BW, BH = 130, 26
+    RunService.RenderStepped:Wait()
+    local vp = workspace.CurrentCamera.ViewportSize
+
+    FDEF = {
+        flash = {x = savedCfg.flashBtnX or (vp.X - BW - 16), y = savedCfg.flashBtnY or (vp.Y / 2 - 46)},
+        reset = {x = savedCfg.resetBtnX or (vp.X - BW - 16), y = savedCfg.resetBtnY or (vp.Y / 2 - 16)},
+        block = {x = savedCfg.blockBtnX or (vp.X - BW - 16), y = savedCfg.blockBtnY or (vp.Y / 2 + 14)},
+        slot = {x = savedCfg.slotBtnX or (vp.X - BW - 16), y = savedCfg.slotBtnY or (vp.Y / 2 + 44)},
+        balloon = {x = savedCfg.balloonBtnX or (vp.X - BW - 16), y = savedCfg.balloonBtnY or (vp.Y / 2 + 74)},
+    }
+
+    local svFloat = function()
+        saveAll()
+    end
+
+    local gDrag = {btn = nil, key = nil, start = nil, pos = nil, moved = false, click = nil, bg = nil}
+    local function getInputPos(input)
+        return Vector2.new(input.Position.X, input.Position.Y)
+    end
+    local function isPress(input)
+        return input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch
+    end
+    local function isMove(input)
+        return input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch
+    end
+    local function startDrag(btn, key, input, clickFn, bgClr)
+        gDrag.btn = btn
+        gDrag.key = key
+        gDrag.start = getInputPos(input)
+        gDrag.pos = Vector2.new(btn.Position.X.Offset, btn.Position.Y.Offset)
+        gDrag.moved = false
+        gDrag.click = clickFn
+        gDrag.bg = bgClr
+        TS:Create(btn, TweenInfo.new(0.07), {BackgroundColor3 = Color3.fromRGB(232, 220, 175)}):Play()
+    end
+    local function finishDrag()
+        local btn = gDrag.btn
+        local key = gDrag.key
+        local fn = gDrag.click
+        local moved = gDrag.moved
+        local bg = gDrag.bg
+        gDrag.btn = nil
+        gDrag.key = nil
+        gDrag.start = nil
+        gDrag.pos = nil
+        gDrag.moved = false
+        gDrag.click = nil
+        gDrag.bg = nil
+        if btn then
+            TS:Create(btn, TweenInfo.new(0.12), {BackgroundColor3 = bg or Color3.fromRGB(248, 240, 205)}):Play()
+            if moved then
+                FDEF[key].x = btn.Position.X.Offset
+                FDEF[key].y = btn.Position.Y.Offset
+                svFloat()
+            else
+                if fn then
+                    fn()
+                end
+            end
+        end
+    end
+    UIS.InputChanged:Connect(function(input)
+        if not gDrag.btn then
+            return
+        end
+        if FLOAT_LOCKED then
+            return
+        end
+        if not isMove(input) then
+            return
+        end
+        local d = getInputPos(input) - gDrag.start
+        if d.Magnitude > 4 then
+            gDrag.moved = true
+            gDrag.btn.Position = UDim2.fromOffset(gDrag.pos.X + d.X, gDrag.pos.Y + d.Y)
+        end
+    end)
+    UIS.InputEnded:Connect(function(input)
+        if not gDrag.btn then
+            return
+        end
+        if not isPress(input) then
+            return
+        end
+        finishDrag()
+    end)
+    RunService.Heartbeat:Connect(function()
+        if not gDrag.btn then
+            return
+        end
+        if not gDrag.moved then
+            return
+        end
+        local mouse1 = UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+        local touch = #UIS:GetTouchState() > 0
+        if not mouse1 and not touch then
+            finishDrag()
+        end
+    end)
+
+    local function mkFBtn(key, label, onClickFn, accent)
+        local bgClr = accent and accent.bg or Color3.fromRGB(248, 240, 205)
+        local brdClr = accent and accent.brd or Color3.fromRGB(200, 178, 118)
+        local txtClr = accent and accent.txt or Color3.fromRGB(65, 50, 16)
+        local btn = Instance.new("TextButton", screenGui)
+        btn.Size = UDim2.fromOffset(BW, BH)
+        btn.Position = UDim2.fromOffset(FDEF[key].x, FDEF[key].y)
+        btn.BackgroundColor3 = bgClr
+        btn.BorderSizePixel = 0
+        btn.Text = label
+        btn.TextColor3 = txtClr
+        btn.Font = Enum.Font.GothamBold
+        btn.TextSize = 10
+        btn.AutoButtonColor = false
+        btn.Active = true
+        btn.ZIndex = 300
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 7)
+        local sk = Instance.new("UIStroke", btn)
+        sk.Color = brdClr
+        sk.Thickness = 1
+        sk.Transparency = 0
+        sk.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        btn.MouseEnter:Connect(function()
+            TS:Create(btn, TweenInfo.new(0.18, Enum.EasingStyle.Quint), {BackgroundColor3 = RAIS}):Play()
+            TS:Create(sk, TweenInfo.new(0.1), {Color = ACC}):Play()
+            TS:Create(btn, TweenInfo.new(0.1), {TextColor3 = Color3.fromRGB(165, 135, 50)}):Play()
+        end)
+        btn.MouseLeave:Connect(function()
+            TS:Create(btn, TweenInfo.new(0.12), {BackgroundColor3 = bgClr}):Play()
+            TS:Create(sk, TweenInfo.new(0.12), {Color = brdClr}):Play()
+            TS:Create(btn, TweenInfo.new(0.12), {TextColor3 = txtClr}):Play()
+        end)
+        local overlay = Instance.new("TextButton", btn)
+        overlay.Size = UDim2.fromScale(1, 1)
+        overlay.BackgroundTransparency = 1
+        overlay.Text = ""
+        overlay.ZIndex = 9999
+        overlay.InputBegan:Connect(function(input)
+            if not isPress(input) then
+                return
+            end
+            startDrag(btn, key, input, onClickFn, bgClr)
+        end)
+        return btn, sk
+    end
+
+    local flashBtn = mkFBtn("flash", "Instant Flash", function()
+        task.spawn(doInstantFlash)
+    end)
+    local resetBtn = mkFBtn("reset", "Reset", function()
+        task.spawn(function()
+            local t = tick() + 10
+            while tick() < t do
+                local tgt
+                pcall(function()
+                    tgt = LocalPlayer.PlayerGui.FlashHubUI.Main.Frame:GetChildren()[5]
+                end)
+                if tgt and tgt:IsA("TextButton") then
+                    for _, c in ipairs(getconnections(tgt.MouseButton1Click)) do
+                        pcall(c.Function)
+                    end
+                    return
+                end
+                task.wait(0.05)
+            end
+        end)
+    end)
+    local blockBtn = mkFBtn("block", "Block Nearest", function()
+        local t = findNearestEnemy()
+        if t then
+            task.spawn(function()
+                NavigationBlock(t)
+            end)
+        end
+    end)
+
+    local balloonBtn
+    do
+        local BBW, BBH = 36, 36
+        local bbtn = Instance.new("TextButton", screenGui)
+        bbtn.Size = UDim2.fromOffset(BBW, BBH)
+        bbtn.Position = UDim2.fromOffset(FDEF.balloon.x, FDEF.balloon.y)
+        bbtn.BackgroundColor3 = Color3.fromRGB(245, 238, 200)
+        bbtn.BorderSizePixel = 0
+        bbtn.Text = ""
+        bbtn.AutoButtonColor = false
+        bbtn.Active = true
+        bbtn.ZIndex = 300
+        Instance.new("UICorner", bbtn).CornerRadius = UDim.new(0, 8)
+        local bsk = Instance.new("UIStroke", bbtn)
+        bsk.Color = Color3.fromRGB(195, 162, 72)
+        bsk.Thickness = 1
+        bsk.Transparency = 0
+        bsk.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        local BODY_CLR = Color3.fromRGB(195, 162, 72)
+        local SHINE_CLR = Color3.fromRGB(228, 208, 128)
+        local KNOT_CLR = Color3.fromRGB(155, 125, 45)
+        local STR_CLR = Color3.fromRGB(155, 125, 45)
+        local body = Instance.new("Frame", bbtn)
+        body.Size = UDim2.fromOffset(20, 22)
+        body.AnchorPoint = Vector2.new(0.5, 0)
+        body.Position = UDim2.new(0.5, 0, 0, 3)
+        body.BackgroundColor3 = BODY_CLR
+        body.BorderSizePixel = 0
+        body.ZIndex = 301
+        body.Active = false
+        Instance.new("UICorner", body).CornerRadius = UDim.new(0, 8)
+        local shine = Instance.new("Frame", body)
+        shine.Size = UDim2.fromOffset(6, 7)
+        shine.Position = UDim2.fromOffset(3, 3)
+        shine.BackgroundColor3 = SHINE_CLR
+        shine.BorderSizePixel = 0
+        shine.BackgroundTransparency = 0.25
+        shine.ZIndex = 302
+        shine.Active = false
+        Instance.new("UICorner", shine).CornerRadius = UDim.new(1, 0)
+        local knot = Instance.new("Frame", bbtn)
+        knot.Size = UDim2.fromOffset(5, 5)
+        knot.AnchorPoint = Vector2.new(0.5, 0)
+        knot.Position = UDim2.new(0.5, 0, 0, 25)
+        knot.BackgroundColor3 = KNOT_CLR
+        knot.BorderSizePixel = 0
+        knot.ZIndex = 301
+        knot.Active = false
+        Instance.new("UICorner", knot).CornerRadius = UDim.new(1, 0)
+        local str = Instance.new("Frame", bbtn)
+        str.Size = UDim2.fromOffset(1, 5)
+        str.AnchorPoint = Vector2.new(0.5, 0)
+        str.Position = UDim2.new(0.5, 0, 0, 30)
+        str.BackgroundColor3 = STR_CLR
+        str.BorderSizePixel = 0
+        str.ZIndex = 301
+        str.Active = false
+        bbtn.MouseEnter:Connect(function()
+            TS:Create(bbtn, TweenInfo.new(0.15, Enum.EasingStyle.Quint), {BackgroundColor3 = RAIS}):Play()
+            TS:Create(bsk, TweenInfo.new(0.1), {Color = ACCD}):Play()
+        end)
+        bbtn.MouseLeave:Connect(function()
+            TS:Create(bbtn, TweenInfo.new(0.15, Enum.EasingStyle.Quint), {BackgroundColor3 = Color3.fromRGB(245, 238, 200)}):Play()
+            TS:Create(bsk, TweenInfo.new(0.12), {Color = Color3.fromRGB(195, 162, 72)}):Play()
+        end)
+        local boverlay = Instance.new("TextButton", bbtn)
+        boverlay.Size = UDim2.fromScale(1, 1)
+        boverlay.BackgroundTransparency = 1
+        boverlay.Text = ""
+        boverlay.ZIndex = 9999
+        boverlay.InputBegan:Connect(function(input)
+            if not isPress(input) then
+                return
+            end
+            startDrag(bbtn, "balloon", input, function()
+                local t = findNearestEnemy()
+                if t then
+                    task.spawn(function()
+                        sendAdminCmd(t, "balloon")
+                    end)
+                end
+            end, Color3.fromRGB(245, 238, 200))
+        end)
+        balloonBtn = bbtn
+    end
+
+    local FSLOTS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+    local FITEM_H = 30
+    local fDropOpen = false
+
+    local fDrop = Instance.new("CanvasGroup", screenGui)
+    fDrop.BackgroundColor3 = Color3.fromRGB(248, 240, 205)
+    fDrop.BorderSizePixel = 0
+    fDrop.ZIndex = 9999
+    fDrop.GroupTransparency = 1
+    fDrop.Visible = false
+    fDrop.Size = UDim2.fromOffset(BW, 0)
+    fDrop.ClipsDescendants = true
+    Instance.new("UICorner", fDrop).CornerRadius = UDim.new(0, 10)
+    local fsk = Instance.new("UIStroke", fDrop)
+    fsk.Color = Color3.fromRGB(195, 162, 72)
+    fsk.Thickness = 1
+    fsk.Transparency = 0
+    fsk.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+
+    local fdScroll = Instance.new("ScrollingFrame", fDrop)
+    fdScroll.Size = UDim2.fromScale(1, 1)
+    fdScroll.BackgroundTransparency = 1
+    fdScroll.BorderSizePixel = 0
+    fdScroll.ZIndex = 10000
+    fdScroll.ScrollBarThickness = 2
+    fdScroll.ScrollBarImageColor3 = Color3.fromRGB(185, 155, 65)
+    fdScroll.CanvasSize = UDim2.fromOffset(0, #FSLOTS * FITEM_H)
+    fdScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+    fdScroll.ElasticBehavior = Enum.ElasticBehavior.WhenScrollable
+    local fdL = Instance.new("UIListLayout", fdScroll)
+    fdL.SortOrder = Enum.SortOrder.LayoutOrder
+    fdL.Padding = UDim.new(0, 1)
+    local fdPad = Instance.new("UIPadding", fdScroll)
+    fdPad.PaddingTop = UDim.new(0, 3)
+    fdPad.PaddingBottom = UDim.new(0, 3)
+    fdPad.PaddingLeft = UDim.new(0, 3)
+    fdPad.PaddingRight = UDim.new(0, 3)
+
+    local slotBtn
+
+    for idx, sn in ipairs(FSLOTS) do
+        local isSel = sn == SELECTED_SLOT
+        local row = Instance.new("Frame", fdScroll)
+        row.Size = UDim2.new(1, 0, 0, FITEM_H - 1)
+        row.BackgroundColor3 = Color3.fromRGB(235, 222, 178)
+        row.BackgroundTransparency = isSel and 0 or 1
+        row.BorderSizePixel = 0
+        row.ZIndex = 10001
+        row.LayoutOrder = idx
+        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 5)
+
+        local dot = Instance.new("Frame", row)
+        dot.Size = UDim2.fromOffset(3, 3)
+        dot.AnchorPoint = Vector2.new(0, 0.5)
+        dot.Position = UDim2.new(0, 5, 0.5, 0)
+        dot.BackgroundColor3 = Color3.fromRGB(185, 155, 65)
+        dot.BorderSizePixel = 0
+        dot.ZIndex = 10002
+        dot.BackgroundTransparency = isSel and 0 or 1
+        Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
+
+        local fStarBtn = Instance.new("TextButton", row)
+        fStarBtn.Size = UDim2.fromOffset(18, 18)
+        fStarBtn.AnchorPoint = Vector2.new(1, 0.5)
+        fStarBtn.Position = UDim2.new(1, -3, 0.5, 0)
+        fStarBtn.BackgroundColor3 = Color3.fromRGB(235, 222, 178)
+        fStarBtn.BorderSizePixel = 0
+        fStarBtn.Text = "★"
+        fStarBtn.Font = Enum.Font.GothamBold
+        fStarBtn.TextSize = 11
+        fStarBtn.TextColor3 = STAR_OFF
+        fStarBtn.AutoButtonColor = false
+        fStarBtn.ZIndex = 10005
+        Instance.new("UICorner", fStarBtn).CornerRadius = UDim.new(0, 4)
+
+        local rl = Instance.new("TextLabel", row)
+        rl.Size = UDim2.new(1, -30, 1, 0)
+        rl.Position = UDim2.fromOffset(12, 0)
+        rl.BackgroundTransparency = 1
+        rl.Text = "Slot " .. sn
+        rl.TextColor3 = isSel and ACC or Color3.fromRGB(155, 138, 92)
+        rl.Font = Enum.Font.GothamSemibold
+        rl.TextSize = 9
+        rl.TextXAlignment = Enum.TextXAlignment.Left
+        rl.ZIndex = 10002
+        rl.TextTruncate = Enum.TextTruncate.AtEnd
+
+        local rb = Instance.new("TextButton", row)
+        rb.Size = UDim2.new(1, -22, 1, 0)
+        rb.BackgroundTransparency = 1
+        rb.Text = ""
+        rb.ZIndex = 10003
+
+        rb.MouseEnter:Connect(function()
+            if sn ~= SELECTED_SLOT then
+                TS:Create(row, TweenInfo.new(0.18, Enum.EasingStyle.Quint), {BackgroundTransparency = 0}):Play()
+                TS:Create(rl, TweenInfo.new(0.18, Enum.EasingStyle.Quint), {TextColor3 = Color3.fromRGB(65, 50, 16)}):Play()
+            end
+        end)
+        rb.MouseLeave:Connect(function()
+            if sn ~= SELECTED_SLOT then
+                TS:Create(row, TweenInfo.new(0.18, Enum.EasingStyle.Quint), {BackgroundTransparency = 1}):Play()
+                TS:Create(rl, TweenInfo.new(0.18, Enum.EasingStyle.Quint), {TextColor3 = Color3.fromRGB(155, 138, 92)}):Play()
+            end
+        end)
+        rb.Activated:Connect(function()
+            SELECTED_SLOT = sn
+            local displayTxt = getSlotDisplayText(sn)
+            if slotBtn then
+                slotBtn.Text = displayTxt
+            end
+            dropCurLbl.Text = displayTxt
+            svFloat()
+            currentESPPodium = nil
+            if espLabel then
+                espLabel.Text = displayTxt
+            end
+            for _, ref in ipairs(allFloatItems) do
+                local s = ref.slot == sn
+                TS:Create(ref.r, TweenInfo.new(0.2, Enum.EasingStyle.Quint), {BackgroundTransparency = s and 0 or 1}):Play()
+                TS:Create(ref.d, TweenInfo.new(0.2, Enum.EasingStyle.Quint), {BackgroundTransparency = s and 0 or 1}):Play()
+                TS:Create(ref.l, TweenInfo.new(0.2, Enum.EasingStyle.Quint), {TextColor3 = s and ACC or Color3.fromRGB(155, 138, 92)}):Play()
+            end
+            for _, ref in ipairs(allPanelItems) do
+                local s = ref.slot == sn
+                TS:Create(ref.f, TweenInfo.new(0.15), {BackgroundTransparency = s and 0 or 1}):Play()
+                TS:Create(ref.d, TweenInfo.new(0.15), {BackgroundTransparency = s and 0 or 1}):Play()
+                TS:Create(ref.l, TweenInfo.new(0.15), {TextColor3 = s and ACC or SUB}):Play()
+            end
+            fDropOpen = false
+            TS:Create(fDrop, TweenInfo.new(0.22, Enum.EasingStyle.Quint, Enum.EasingDirection.In), {GroupTransparency = 1, Size = UDim2.fromOffset(BW, 0)}):Play()
+            task.delay(0.22, function()
+                fDrop.Visible = false
+            end)
+        end)
+
+        fStarBtn.MouseButton1Click:Connect(function()
+            onStarClick(sn)
+        end)
+        fStarBtn.MouseEnter:Connect(function()
+            TS:Create(fStarBtn, TweenInfo.new(0.1), {TextColor3 = STAR_ON}):Play()
+        end)
+        fStarBtn.MouseLeave:Connect(function()
+            local isTracked = TRACKED_SLOT ~= nil and sn == TRACKED_SLOT
+            TS:Create(fStarBtn, TweenInfo.new(0.1), {TextColor3 = isTracked and STAR_ON or STAR_OFF}):Play()
+        end)
+
+        table.insert(allFloatItems, {r = row, d = dot, l = rl, star = fStarBtn, slot = sn})
+        table.insert(allStarBtns, {btn = fStarBtn, slot = sn})
+    end
+
+    slotBtn = mkFBtn("slot", "Slot " .. SELECTED_SLOT, function()
+        fDropOpen = not fDropOpen
+        if fDropOpen then
+            local ap = slotBtn.AbsolutePosition
+            local as = slotBtn.AbsoluteSize
+            local dropH = #FSLOTS * FITEM_H
+            fdScroll.CanvasPosition = Vector2.zero
+            fDrop.Position = UDim2.fromOffset(ap.X, ap.Y + as.Y + 70)
+            fDrop.GroupTransparency = 1
+            fDrop.Size = UDim2.fromOffset(BW, 0)
+            fDrop.Visible = true
+            TS:Create(fDrop, TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {GroupTransparency = 0, Size = UDim2.fromOffset(BW, dropH)}):Play()
+        else
+            TS:Create(fDrop, TweenInfo.new(0.22, Enum.EasingStyle.Quint, Enum.EasingDirection.In), {GroupTransparency = 1, Size = UDim2.fromOffset(BW, 0)}):Play()
+            task.delay(0.22, function()
+                if not fDropOpen then
+                    fDrop.Visible = false
+                end
+            end)
+        end
+    end)
+
+    RunService.Heartbeat:Connect(function()
+        if fDropOpen and fDrop.Visible and slotBtn then
+            local ap = slotBtn.AbsolutePosition
+            local as = slotBtn.AbsoluteSize
+            fDrop.Position = UDim2.fromOffset(ap.X, ap.Y + as.Y + 70)
+        end
+    end)
+
+    task.spawn(function()
+        local lastTracked = nil
+        while screenGui.Parent do
+            task.wait(0.5)
+
+            for _, ref in ipairs(allPanelItems) do
+                local br = getBrainrotForSlot(ref.slot)
+                if br then
+                    local gen = getGenerationForSlot(ref.slot)
+                    ref.l.Text = gen and (br .. " | " .. gen) or br
+                else
+                    ref.l.Text = "Slot " .. ref.slot
+                end
+            end
+            for _, ref in ipairs(allFloatItems) do
+                local br = getBrainrotForSlot(ref.slot)
+                if br then
+                    local gen = getGenerationForSlot(ref.slot)
+                    ref.l.Text = gen and (br .. " | " .. gen) or br
+                else
+                    ref.l.Text = "Slot " .. ref.slot
+                end
+            end
+
+            local curBr = getBrainrotForSlot(SELECTED_SLOT)
+            local curDisplay
+            if curBr then
+                local gen = getGenerationForSlot(SELECTED_SLOT)
+                curDisplay = gen and (curBr .. " | " .. gen) or curBr
+            else
+                curDisplay = "Slot " .. SELECTED_SLOT
+            end
+            dropCurLbl.Text = curDisplay
+            if slotBtn then
+                slotBtn.Text = curDisplay
+            end
+
+            if TRACKED_BRAINROT and TRACKED_INSTANCE then
+                if not TRACKED_INSTANCE.Parent then
+                    TRACKED_BRAINROT = nil
+                    TRACKED_SLOT = nil
+                    TRACKED_INSTANCE = nil
+                else
+                    local plot = getNearestEnemyPlot()
+                    local podiums = plot and plot:FindFirstChild("AnimalPodiums")
+                    if podiums then
+                        local instancePos = TRACKED_INSTANCE.Position
+                        local resolvedSlot = nil
+                        local bestDist = math.huge
+                        for _, sn in ipairs(VALID_SLOTS) do
+                            local podium = podiums:FindFirstChild(tostring(sn))
+                            if podium then
+                                local base = podium:FindFirstChild("Base")
+                                local spawnPart = base and base:FindFirstChild("Spawn")
+                                if spawnPart then
+                                    local dist = (instancePos - spawnPart.Position).Magnitude
+                                    if dist < bestDist then
+                                        bestDist = dist
+                                        resolvedSlot = sn
+                                    end
+                                end
+                            end
+                        end
+                        if resolvedSlot and bestDist < 8 then
+                            if resolvedSlot ~= TRACKED_SLOT then
+                                TRACKED_SLOT = resolvedSlot
+                                SELECTED_SLOT = resolvedSlot
+                                local displayTxt = TRACKED_BRAINROT
+                                dropCurLbl.Text = displayTxt
+                                if slotBtn then
+                                    slotBtn.Text = displayTxt
+                                end
+                                currentESPPodium = nil
+                                for _, ref in ipairs(allPanelItems) do
+                                    local s = ref.slot == resolvedSlot
+                                    TS:Create(ref.f, TweenInfo.new(0.15), {BackgroundTransparency = s and 0 or 1}):Play()
+                                    TS:Create(ref.d, TweenInfo.new(0.15), {BackgroundTransparency = s and 0 or 1}):Play()
+                                end
+                                for _, ref in ipairs(allFloatItems) do
+                                    local s = ref.slot == resolvedSlot
+                                    TS:Create(ref.r, TweenInfo.new(0.15), {BackgroundTransparency = s and 0 or 1}):Play()
+                                    TS:Create(ref.d, TweenInfo.new(0.15), {BackgroundTransparency = s and 0 or 1}):Play()
+                                end
+                                saveAll()
+                            end
+                            if SELECTED_SLOT ~= TRACKED_SLOT then
+                                SELECTED_SLOT = TRACKED_SLOT
+                            end
+                        end
+                    end
+                end
+            end
+
+            if TRACKED_SLOT ~= lastTracked then
+                lastTracked = TRACKED_SLOT
+                refreshAllStars()
+            end
+            for _, ref in ipairs(allStarBtns) do
+                local brAtSlot = getBrainrotForSlot(ref.slot)
+                local isTracked = TRACKED_SLOT ~= nil and ref.slot == TRACKED_SLOT
+                if not brAtSlot and not isTracked then
+                    ref.btn.TextColor3 = Color3.fromRGB(215, 205, 178)
+                end
+            end
+        end
+    end)
+end
+
+buildGUI()
